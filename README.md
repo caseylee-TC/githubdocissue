@@ -38,7 +38,18 @@ The search query (shown at the top of the dashboard) requires an issue to be:
 - labeled with any of `documentation`, `docs`
 - **and** labeled `help wanted` (on by default, so every result is from a project asking for contributors; turn off with `--no-help-wanted`)
 
-The search's "no linked pull request" only catches PRs formally linked to the issue. After the search, the script also checks each issue's timeline and drops any issue that an **open or merged PR** mentions. A PR closed without merging counts as abandoned, so its issue stays. Issues with comments are kept. The script goes through the search results, fetching more pages as needed, until it has `--max-issues` issues with no such PR. So a run returns the full `--max-issues` unless the search runs out of results.
+The search's "no linked pull request" only catches PRs formally linked to the issue. After the search, the script also checks each issue's timeline and drops any issue that an **open or merged PR** mentions. A PR closed without merging counts as abandoned, so its issue stays. Issues with comments are kept.
+
+It also skips issues with a label from `EXCLUDE_LABELS` (near the top of the script), which means the issue isn't open for work:
+
+- not accepted: `invalid`, `wontfix`, `won't fix`, `duplicate`, `not planned`, `spam`
+- not ready: `needs approval`, `blocked`, `on hold`, `needs design`, `needs info`, `needs more info`, `waiting for author`, `awaiting response`
+- already taken: `in progress`, `claimed`, `assigned`
+- about to close: `stale`
+
+Matching ignores case, treats `-`, `_` and spaces alike, and ignores a prefix such as `status:` or `triage/`, so `Needs-Approval` and `status: blocked` are caught too. `needs triage` and `question` are deliberately not on the list, since many good docs issues carry them.
+
+The dashboard header shows how many issues were skipped in total. The script goes through the search results, fetching more pages as needed, until it has `--max-issues` issues that pass both checks. So a run returns the full `--max-issues` unless the search runs out of results.
 
 Beginner labels (`good first issue`, `good-first-issue`, `first-timers-only`) are not required. The search returns issues with and without them, and the dashboard's **good first issue** checkbox switches between the two.
 

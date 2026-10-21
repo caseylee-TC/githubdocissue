@@ -41,6 +41,16 @@ DOC_LABELS = ["documentation", "docs"]
 # Add spellings here (e.g. "help-wanted") if you find the search is missing them. Each extra value is
 # another OR, and GitHub caps how many AND/OR/NOT operators one search may use.
 HELP_WANTED_LABELS = ["help wanted"]
+# Issues with any of these labels are skipped: not accepted, not ready, already taken, or about to close.
+# Matching ignores case, treats "-", "_" and spaces alike, and ignores a "status:" or "triage/" style
+# prefix, so "Needs-Approval" and "status: blocked" match too. Whole labels only, never words inside one.
+EXCLUDE_LABELS = [
+    "invalid", "wontfix", "won't fix", "duplicate", "not planned", "spam",
+    "needs approval", "blocked", "on hold", "needs design", "needs info", "needs more info",
+    "waiting for author", "awaiting response",
+    "in progress", "claimed", "assigned",
+    "stale",
+]
 
 CONTRIBUTING_PATHS = [
     "CONTRIBUTING.md",
@@ -170,13 +180,37 @@ def referencing_pr(gh, issue):
         page += 1
 
 
-def collect_issues(gh, query, max_issues):
-    """Go through the search results until max_issues issues have no open or merged PR.
+def _label_key(label):
+    return re.sub(r"[-_\s]+", " ", label.lower()).strip()
 
-    Returns (issues, skipped), where skipped is how many results had a PR.
+
+EXCLUDE_KEYS = {_label_key(l) for l in EXCLUDE_LABELS}
+
+
+def excluded_label(issue):
+    """Return the first label on the issue that's in EXCLUDE_LABELS, else None."""
+    for lab in issue.get("labels", []):
+        name = lab["name"] if isinstance(lab, dict) else lab
+        key = _label_key(name)
+        if key in EXCLUDE_KEYS or _label_key(re.split(r"[:/]", key)[-1]) in EXCLUDE_KEYS:
+            return name
+    return None
+
+
+def collect_issues(gh, query, max_issues):
+    """Go through the search results until max_issues issues pass the filters.
+
+    An issue is skipped if it has an EXCLUDE_LABELS label (checked first, since
+    it costs no API call) or an open or merged PR references it.
+    Returns (issues, skipped), where skipped counts both kinds.
     """
     issues, skipped = [], 0
     for it in search_issues(gh, query, per_page=min(100, max_issues * 2)):
+        label = excluded_label(it)
+        if label:
+            skipped += 1
+            print(f"  skipping {it['html_url']}: labeled {label}")
+            continue
         pr = referencing_pr(gh, it)
         if pr:
             skipped += 1
@@ -533,7 +567,7 @@ const genText = isNaN(gen) ? META.generated : gen.toLocaleString(undefined, {
   year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short",
 });
 $("sub").textContent = "Data gathered " + genText + " · " + DATA.length + " issues" +
-  (META.skipped ? " (" + META.skipped + " more skipped because a pull request already covers them)" : "");
+  (META.skipped ? " · " + META.skipped + " skipped" : "");
 $("desc").textContent = META.description || "";
 if (!META.description) $("desc").style.display = "none";
 $("query").textContent = META.query;
@@ -735,7 +769,7 @@ def describe_search(days, extra, require_help_wanted=True):
     labels = " or ".join(DOC_LABELS)
     if require_help_wanted:
         labels += " and " + " or ".join(HELP_WANTED_LABELS)
-    text = f"Open, unassigned issues labeled {labels}, opened since {since:%b} {since.day}, {since.year}, with no pull request"
+    text = f"Open, unassigned issues labeled {labels}, opened since {since:%b} {since.day}, {since.year}, with no pull request and no blocking label such as wontfix or needs approval"
     if extra:
         text += f", also matching {extra}"
     return text + "."
@@ -785,7 +819,7 @@ def main():
     query = build_query(args.days, args.query, require_help_wanted=not args.no_help_wanted)
     print(f"Searching: {query}")
     issues, skipped = collect_issues(gh, query, args.max_issues)
-    print(f"Collected {len(issues)} matching issues (skipped {skipped} that already have a pull request).")
+    print(f"Collected {len(issues)} matching issues (skipped {skipped}).")
 
     cache = {} if args.no_cache else load_cache()
     repos = {}
