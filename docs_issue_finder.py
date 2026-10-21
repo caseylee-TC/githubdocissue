@@ -13,7 +13,7 @@ Pipeline:
 
 Usage:
   export GITHUB_TOKEN=ghp_...        # recommended (read-only public access is enough)
-  python docs_issue_finder.py --max-issues 50 --days 90
+  python docs_issue_finder.py --max-issues 150 --days 90
 """
 import argparse
 import json
@@ -797,7 +797,7 @@ def write_dashboard(records, query, out_path, description="", skipped=0):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument(
-        "--max-issues", type=int, default=50, help="max issues to collect, newest activity first (default 50)"
+        "--max-issues", type=int, default=150, help="max issues to collect, newest activity first (default 150)"
     )
     ap.add_argument("--days", type=int, default=90, help="only issues opened within the last N days (default 90)")
     ap.add_argument("--query", default="", help='extra GitHub search qualifiers, e.g. "language:python"')

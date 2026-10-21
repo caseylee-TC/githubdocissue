@@ -6,7 +6,7 @@ on:
     inputs:
       max_issues:
         description: Maximum issues to collect (most recently updated first)
-        default: "50"
+        default: "150"
       days:
         description: Only issues opened within the last N days
         default: "90"

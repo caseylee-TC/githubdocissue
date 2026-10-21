@@ -10,7 +10,7 @@ pip install -r requirements.txt
 # A read-only GitHub token is enough (no scopes needed for public data)
 export GITHUB_TOKEN=ghp_your_token_here
 
-python docs_issue_finder.py --max-issues 50 --days 90
+python docs_issue_finder.py --max-issues 150 --days 90
 open dashboard.html        # macOS; use xdg-open on Linux, start on Windows
 ```
 
@@ -20,7 +20,7 @@ Without a token the script still works, but GitHub's unauthenticated limits are 
 
 | Flag | Default | What it does |
 |------|---------|--------------|
-| `--max-issues N` | 50 | Maximum issues to collect, taking the most recently updated first |
+| `--max-issues N` | 150 | Maximum issues to collect, taking the most recently updated first |
 | `--days N` | 90 | Only issues opened within the last N days |
 | `--query "..."` | none | Extra GitHub search qualifiers, e.g. `"language:python"` or `"org:kubernetes"` |
 | `--no-help-wanted` | off | Don't require the `help wanted` label (it is required by default) |
