@@ -50,6 +50,8 @@ EXCLUDE_LABELS = [
     "waiting for author", "awaiting response",
     "in progress", "claimed", "assigned",
     "stale",
+    # bounty programs and bot-generated issues
+    "stellar wave", "drips wave", "150 points", "auto dispatch", "origin:worker",
 ]
 
 CONTRIBUTING_PATHS = [

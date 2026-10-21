@@ -46,6 +46,7 @@ It also skips issues with a label from `EXCLUDE_LABELS` (near the top of the scr
 - not ready: `needs approval`, `blocked`, `on hold`, `needs design`, `needs info`, `needs more info`, `waiting for author`, `awaiting response`
 - already taken: `in progress`, `claimed`, `assigned`
 - about to close: `stale`
+- bounty programs and bot-generated issues: `stellar wave`, `drips wave`, `150 points`, `auto dispatch`, `origin:worker`
 
 Matching ignores case, treats `-`, `_` and spaces alike, and ignores a prefix such as `status:` or `triage/`, so `Needs-Approval` and `status: blocked` are caught too. `needs triage` and `question` are deliberately not on the list, since many good docs issues carry them.
 
