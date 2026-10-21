@@ -2,7 +2,8 @@
 """Docs Issue Finder: find open-source documentation issues that welcome new contributors.
 
 Pipeline:
-  1. Search GitHub for open, unassigned "good first issue" + documentation issues.
+  1. Search GitHub for open, unassigned issues labeled "good first issue", documentation and
+     "help wanted" (the last is required by default; see --no-help-wanted).
   2. Filter out stale / claimed issues and archived repos.
   3. For each repo, fetch the README and the contributing guide (cached).
   4. Summarize the project and the contribution steps (heuristic, or LLM with --llm).
@@ -34,6 +35,10 @@ CACHE_VERSION = 2
 # and separate label: qualifiers as AND. So: (any first-issue label) AND (any docs label).
 FIRST_ISSUE_LABELS = ["good first issue", "good-first-issue", "first-timers-only"]
 DOC_LABELS = ["documentation", "docs"]
+# Required by default: projects that tag an issue "help wanted" are explicitly asking for contributors.
+# Add spellings here (e.g. "help-wanted") if you find the search is missing them. Each extra value is
+# another OR, and GitHub caps how many AND/OR/NOT operators one search may use.
+HELP_WANTED_LABELS = ["help wanted"]
 
 CONTRIBUTING_PATHS = [
     "CONTRIBUTING.md",
@@ -106,7 +111,7 @@ class GitHub:
 # ----------------------------------------------------------------------------
 # Step 1-2: discover and filter issues
 # ----------------------------------------------------------------------------
-def build_query(days, extra):
+def build_query(days, extra, require_help_wanted=True):
     since = (date.today() - timedelta(days=days)).isoformat()
     first = ",".join(f'"{l}"' for l in FIRST_ISSUE_LABELS)
     docs = ",".join(f'"{l}"' for l in DOC_LABELS)
@@ -114,6 +119,8 @@ def build_query(days, extra):
         f"is:issue is:open no:assignee -linked:pr archived:false "
         f"updated:>={since} label:{first} label:{docs}"
     )
+    if require_help_wanted:
+        q += " label:" + ",".join(f'"{l}"' for l in HELP_WANTED_LABELS)
     if extra:
         q += " " + extra
     return q
@@ -425,7 +432,11 @@ function labelOption(key, pinned) {
   lab.appendChild(n);
   return lab;
 }
-PINNED.forEach(k => $("pinned").appendChild(labelOption(k, true)));
+PINNED.forEach(k => {
+  // If every issue already has this label (the search requires help wanted by default), it can't filter anything.
+  if (DATA.length && counts[k] === DATA.length) return;
+  $("pinned").appendChild(labelOption(k, true));
+});
 // Labels that every issue carries (the search already requires them) can't filter anything, so hide them.
 const others = Object.keys(counts)
   .filter(k => !PINNED.includes(k) && counts[k] < DATA.length)
@@ -523,6 +534,11 @@ def main():
     ap.add_argument("--max-issues", type=int, default=30, help="max issues to collect (default 30)")
     ap.add_argument("--days", type=int, default=90, help="only issues updated within N days (default 90)")
     ap.add_argument("--query", default="", help='extra GitHub search qualifiers, e.g. "language:python"')
+    ap.add_argument(
+        "--no-help-wanted",
+        action="store_true",
+        help='do not require the "help wanted" label (it is required by default)',
+    )
     ap.add_argument("--llm", action="store_true", help="use Claude for summaries (needs ANTHROPIC_API_KEY)")
     ap.add_argument("--no-cache", action="store_true", help="ignore the repo cache")
     ap.add_argument("--out", default=str(HERE / "dashboard.html"), help="output HTML path")
@@ -535,7 +551,7 @@ def main():
         print("Note: --llm needs ANTHROPIC_API_KEY; falling back to heuristic summaries.", file=sys.stderr)
 
     gh = GitHub(token)
-    query = build_query(args.days, args.query)
+    query = build_query(args.days, args.query, require_help_wanted=not args.no_help_wanted)
     print(f"Searching: {query}")
     issues = search_issues(gh, query, args.max_issues)
     print(f"Found {len(issues)} issues.")

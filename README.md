@@ -23,6 +23,7 @@ Without a token the script still works, but GitHub's unauthenticated limits are 
 | `--max-issues N` | 30 | Maximum issues to collect |
 | `--days N` | 90 | Only issues updated within the last N days |
 | `--query "..."` | none | Extra GitHub search qualifiers, e.g. `"language:python"` or `"org:kubernetes"` |
+| `--no-help-wanted` | off | Don't require the `help wanted` label (it is required by default) |
 | `--llm` | off | Use Claude for the project summary and contribution steps (needs `ANTHROPIC_API_KEY`) |
 | `--no-cache` | off | Ignore the per-repo cache |
 | `--out PATH` | `dashboard.html` | Where to write the dashboard |
@@ -36,16 +37,18 @@ The search query (shown at the top of the dashboard) requires an issue to be:
 - **updated within `--days`**
 - labeled with any of `good first issue`, `good-first-issue`, `first-timers-only`
 - **and** labeled with any of `documentation`, `docs`
+- **and** labeled `help wanted` (on by default, so every result is from a project asking for contributors; turn off with `--no-help-wanted`)
 
 To tune it, edit `FIRST_ISSUE_LABELS` and `DOC_LABELS` near the top of `docs_issue_finder.py`. Inside one `label:` qualifier GitHub treats comma-separated values as OR; separate `label:` qualifiers are AND.
 
 ## Using the dashboard
 
-- Tick **help wanted** (pinned at the top, with a count) to show only issues that carry that label.
+- `help wanted` is required by the search by default, so every result has it. If you run with `--no-help-wanted`, a **help wanted** checkbox appears at the top (with a count) so you can still filter on it.
 - **More labels** lists every other label in the results, with counts. Labels that every issue shares, such as the ones the search already requires, are hidden because they can't narrow anything.
 - Spellings are merged, so `help-wanted`, `Help Wanted` and `help wanted` count as one label.
 - With several labels ticked, choose **Match any** or **Match all**.
-- These filters only narrow the issues the search already returned (`--max-issues`). If you want more `help wanted` results, raise `--max-issues`.
+- These filters only narrow the issues the search already returned (`--max-issues`).
+- `HELP_WANTED_LABELS` near the top of the script lists the accepted spellings. Add one such as `help-wanted` if the search misses projects that use it.
 
 ## What it collects per project
 
