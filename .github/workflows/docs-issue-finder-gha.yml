@@ -1,0 +1,52 @@
+name: Docs Issue Finder
+
+# On demand: run it from the repo's Actions tab with the "Run workflow" button.
+on:
+  workflow_dispatch:
+    inputs:
+      max_issues:
+        description: Maximum issues to collect
+        default: "30"
+      days:
+        description: Only issues updated within the last N days
+        default: "90"
+
+permissions:
+  contents: read
+
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # Keeps the per-repo cache between runs so repeat runs make fewer API calls.
+      - name: Restore repo cache
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: repo-cache-${{ github.run_id }}
+          restore-keys: repo-cache-
+
+      - name: Run finder
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: add an ANTHROPIC_API_KEY repo secret, uncomment this line,
+          # and add --llm to the command below for Claude-written summaries.
+          # ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MAX_ISSUES: ${{ inputs.max_issues }}
+          DAYS: ${{ inputs.days }}
+        run: python docs_issue_finder.py --max-issues "$MAX_ISSUES" --days "$DAYS"
+
+      - name: Upload dashboard
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard
+          path: dashboard.html
