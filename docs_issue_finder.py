@@ -377,7 +377,11 @@ HTML_TEMPLATE = r"""<!doctype html>
   body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
   main { max-width: 920px; margin: 0 auto; padding: 24px 16px 64px; }
   h1 { font-size: 22px; margin: 0 0 4px; }
-  .sub { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
+  .sub { color: var(--muted); margin: 0 0 4px; font-size: 13px; }
+  .sub.desc { color: var(--text); font-size: 14px; }
+  details.query { margin: 0 0 20px; font-size: 12px; }
+  details.query summary { color: var(--muted); }
+  details.query code { display:block; margin-top:6px; padding:8px 10px; background:var(--chip); border-radius:8px; color:var(--muted); overflow-wrap:anywhere; }
   .controls { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
   input, select { background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font:inherit; }
   input { flex:1 1 240px; }
@@ -426,6 +430,8 @@ HTML_TEMPLATE = r"""<!doctype html>
 <main>
   <h1>GitHub Docs Issue Finder</h1>
   <p class="sub" id="sub"></p>
+  <p class="sub desc" id="desc"></p>
+  <details class="query"><summary>Show the exact GitHub search query</summary><code id="query"></code></details>
   <div class="controls">
     <input id="q" type="search" placeholder="Filter by keyword (project, issue, topic)...">
     <select id="lang"><option value="">All languages</option></select>
@@ -457,7 +463,18 @@ HTML_TEMPLATE = r"""<!doctype html>
 const DATA = __DATA__;
 const META = __META__;
 const $ = id => document.getElementById(id);
-$("sub").textContent = "Generated " + META.generated + " · query: " + META.query;
+// Header: when the data was gathered (in the viewer's time zone), what was searched for, and the raw query.
+const gen = new Date(META.generated);
+const genText = isNaN(gen) ? META.generated : gen.toLocaleString(undefined, {
+  year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short",
+});
+$("sub").textContent = "Data gathered " + genText + " · " + DATA.length + " issues" +
+  (META.skipped ? " (" + META.skipped + " more skipped because a pull request already covers them)" : "");
+$("desc").textContent = META.description || "";
+if (!META.description) $("desc").style.display = "none";
+$("query").textContent = META.query;
+
+function ago(days) { return days === 0 ? "today" : days === 1 ? "yesterday" : days + " days ago"; }
 
 const langs = [...new Set(DATA.map(d => d.repo.language).filter(Boolean))].sort();
 langs.forEach(l => { const o = document.createElement("option"); o.value = l; o.textContent = l; $("lang").appendChild(o); });
@@ -551,7 +568,7 @@ function issueItem(d) {
     const k = norm(l);
     chips.appendChild(el("span", "chip" + (selected.has(k) || (beginnerOn && BEGINNER.has(k)) ? " hl" : ""), l));
   });
-  chips.appendChild(el("span", "meta", "updated " + d.updated_days + "d ago · opened " + d.created_days + "d ago · " + d.comments + (d.comments === 1 ? " comment" : " comments")));
+  chips.appendChild(el("span", "meta", "updated " + ago(d.updated_days) + " · opened " + ago(d.created_days) + " · " + d.comments + (d.comments === 1 ? " comment" : " comments")));
   li.appendChild(chips);
   return li;
 }
@@ -648,10 +665,25 @@ render();
 """
 
 
-def write_dashboard(records, query, out_path):
+def describe_search(days, extra, require_help_wanted=True):
+    """A plain-English version of build_query() for the dashboard header."""
+    since = date.today() - timedelta(days=days)
+    labels = " or ".join(DOC_LABELS)
+    if require_help_wanted:
+        labels += " and " + " or ".join(HELP_WANTED_LABELS)
+    text = f"Open, unassigned issues labeled {labels}, opened since {since:%b} {since.day}, {since.year}, with no pull request"
+    if extra:
+        text += f", also matching {extra}"
+    return text + "."
+
+
+def write_dashboard(records, query, out_path, description="", skipped=0):
     meta = {
-        "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        # UTC with an offset, so the page can show it in the viewer's own time zone.
+        "generated": datetime.now(timezone.utc).isoformat(timespec="minutes"),
         "query": query,
+        "description": description,
+        "skipped": skipped,
         "beginner_labels": FIRST_ISSUE_LABELS,
     }
     safe = lambda obj: json.dumps(obj).replace("</", "<\\/")
@@ -713,7 +745,8 @@ def main():
         save_cache(cache)
 
     records = build_records(issues, repos)
-    write_dashboard(records, query, args.out)
+    description = describe_search(args.days, args.query, require_help_wanted=not args.no_help_wanted)
+    write_dashboard(records, query, args.out, description, skipped)
     print(f"Wrote {args.out} with {len(records)} issues from {len(repos)} repos.")
 
 
