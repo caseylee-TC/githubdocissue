@@ -31,7 +31,7 @@ HERE = Path(__file__).resolve().parent
 CACHE_FILE = HERE / ".cache" / "repos.json"
 CACHE_TTL_DAYS = 7
 # Bump this when the cached fields or summary logic change; older entries are then refetched.
-CACHE_VERSION = 2
+CACHE_VERSION = 3  # bump when the cached repo fields or summary rules change
 
 # Label sets. GitHub treats comma-separated values inside one label: qualifier as OR,
 # and separate label: qualifiers as AND. So: (any first-issue label) AND (any docs label).
@@ -213,21 +213,89 @@ def cache_fresh(entry):
     return datetime.now(timezone.utc) - fetched < timedelta(days=CACHE_TTL_DAYS)
 
 
-def clean_readme_paragraph(readme, limit=320):
+NAV_SEPARATORS = re.compile(r"\s+[|·•]\s+")
+FLAG_EMOJI = re.compile(r"[\U0001F1E6-\U0001F1FF]{2}")
+# Captions and calls to action rather than a description of the project.
+NOT_A_SUMMARY = re.compile(
+    r"\b(star (this|the|us)|give (us|it) a star|watch the|screenshots?|gif|video|mp4|click|logo)\b", re.I
+)
+
+
+def clean_paragraph(para):
+    """Turn one README paragraph into plain text, or "" if it's navigation rather than prose."""
+    lines = [re.sub(r"^\s*>\s?", "", line) for line in para.strip().splitlines()]  # blockquote markers
+    p = " ".join(" ".join(lines).split())
+    if not p or p.startswith(("#", "|", "```", "---", "===", "* ", "- ", "+ ")) or re.match(r"\d+\. ", p):
+        return ""
+    if len(FLAG_EMOJI.findall(p)) >= 2:
+        return ""  # a language switcher made of flag emojis
+    p = re.sub(r"\[([^\]]+)\]\((?:[^()]|\([^)]*\))*\)", r"\1", p)  # [text](url) -> text
+    p = re.sub(r"\[([^\]]+)\]\[[^\]]*\]", r"\1", p)  # [text][ref] -> text
+    p = re.sub(r"`([^`]*)`", r"\1", p)  # inline code
+    p = re.sub(r"(\*\*|__)(.+?)\1", r"\2", p)  # bold
+    p = re.sub(r"(?<![\w*])[*_](\S(?:.*?\S)?)[*_](?![\w*])", r"\1", p)  # italics
+    # Rows like "English | Español | Deutsch" or "Website · Docs · Contribute" are navigation.
+    # Keep only the parts that read like sentences.
+    parts = NAV_SEPARATORS.split(p)
+    if len(parts) > 1:
+        p = " ".join(part for part in parts if len(part.split()) >= 5)
+    p = " ".join(p.split())
+    if len(p) < 40 or p.endswith(":") or NOT_A_SUMMARY.search(p):
+        return ""  # too short, a lead-in to a code block or list, or a caption / call to action
+    return p
+
+
+def readme_paragraphs(readme, limit=6):
+    """The README's first few paragraphs that read like prose, with markdown and badges stripped."""
     text = re.sub(r"<!--.*?-->", "", readme, flags=re.S)
     text = re.sub(r"<[^>]+>", "", text)  # html tags
-    # Linked badges first ([![alt](img)](url)), then bare images, then empty-link leftovers.
-    text = re.sub(r"\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)", "", text)
-    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
+    # Badges and images: linked ([![alt](img)](url)), reference-style ([![alt][img]][url]), then bare ones.
+    text = re.sub(r"\[!\[[^\]]*\](?:\([^)]*\)|\[[^\]]*\])\](?:\([^)]*\)|\[[^\]]*\])", "", text)
+    text = re.sub(r"!\[[^\]]*\](?:\([^)]*\)|\[[^\]]*\])", "", text)
+    text = re.sub(r"^\s*\[[^\]]+\]:\s*\S+.*$", "", text, flags=re.M)  # reference link definitions
     text = re.sub(r"\[\s*\]\([^)]*\)", "", text)
+    found = []
     for para in re.split(r"\n\s*\n", text):
-        p = " ".join(para.strip().split())
-        if len(p) < 60 or p.startswith(("#", "|", "```", "---", "===", "* ", "- ")):
-            continue
-        p = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", p)  # links -> text
-        p = p.replace("**", "")
-        return p if len(p) <= limit else p[: limit - 1].rstrip() + "…"
-    return ""
+        p = clean_paragraph(para)
+        if p:
+            found.append(p)
+            if len(found) >= limit:
+                break
+    return found
+
+
+def _words(text):
+    return {w.rstrip("s") for w in re.findall(r"[a-z0-9][a-z0-9-]+", text.lower()) if len(w) > 2}
+
+
+def build_summary(description, readme, limit=320):
+    """The repo description plus the README's first prose paragraph, without repeating itself."""
+    description = " ".join(description.split())
+    desc_words = _words(description)
+    # Use the first README paragraph that adds something: drop sentences that mostly restate
+    # the description, and move on to the next paragraph if nothing is left.
+    para = ""
+    for candidate in readme_paragraphs(readme):
+        sentences = re.split(r"(?<=[.!?])\s+", candidate)
+        para = " ".join(
+            s for s in sentences if not desc_words or not (w := _words(s)) or len(w & desc_words) / len(w) < 0.6
+        )
+        if para:
+            break
+    # Drop the description when the README already covers it (e.g. it's just the project name).
+    if desc_words and para and len(desc_words & _words(para)) / len(desc_words) >= 0.8:
+        description = ""
+    if description and para and description[-1] not in ".!?…":
+        description += "."
+    summary = " ".join(s for s in [description, para] if s)
+    if len(summary) <= limit:
+        return summary
+    # Too long: end at the last full sentence that fits, or failing that at a word boundary.
+    cut = summary[:limit]
+    end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+    if end >= limit // 2:
+        return cut[: end + 1]
+    return cut[: cut.rfind(" ")].rstrip(" ,;:—-") + "…"
 
 
 def analyze_contributing(text):
@@ -304,11 +372,7 @@ def fetch_repo_context(gh, full_name, use_llm):
     analysis = analyze_contributing(contributing)
     llm = llm_summarize(full_name, meta.get("description") or "", readme, contributing) if use_llm else None
 
-    description = meta.get("description") or ""
-    para = clean_readme_paragraph(readme)
-    if description and para and description.lower().rstrip(".") in para.lower():
-        description = ""  # the README paragraph already repeats the repo description
-    summary = (llm or {}).get("project_summary") or " ".join(s for s in [description, para] if s)
+    summary = (llm or {}).get("project_summary") or build_summary(meta.get("description") or "", readme)
 
     return {
         "v": CACHE_VERSION,
