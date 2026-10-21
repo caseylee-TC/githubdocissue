@@ -12,7 +12,7 @@ on:
         default: "90"
 
 permissions:
-  contents: read
+  contents: write # lets the job commit the dashboard to output/
 
 jobs:
   find:
@@ -43,11 +43,20 @@ jobs:
           # ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           MAX_ISSUES: ${{ inputs.max_issues }}
           DAYS: ${{ inputs.days }}
-        run: python docs_issue_finder.py --max-issues "$MAX_ISSUES" --days "$DAYS"
+        run: python docs_issue_finder.py --max-issues "$MAX_ISSUES" --days "$DAYS" --out output/dashboard.html
 
       - name: Upload dashboard
         uses: actions/upload-artifact@v7
         with:
           name: dashboard
-          path: dashboard.html
+          path: output/dashboard.html
           archive: false # upload the HTML as-is instead of wrapping it in a zip
+
+      # Saves the dashboard in the repo's output/ directory.
+      - name: Commit dashboard
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add output/dashboard.html
+          git diff --cached --quiet || git commit -m "Update dashboard"
+          git push
