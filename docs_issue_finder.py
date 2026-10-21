@@ -27,6 +27,8 @@ API = "https://api.github.com"
 HERE = Path(__file__).resolve().parent
 CACHE_FILE = HERE / ".cache" / "repos.json"
 CACHE_TTL_DAYS = 7
+# Bump this when the cached fields or summary logic change; older entries are then refetched.
+CACHE_VERSION = 2
 
 # Label sets. GitHub treats comma-separated values inside one label: qualifier as OR,
 # and separate label: qualifiers as AND. So: (any first-issue label) AND (any docs label).
@@ -154,6 +156,8 @@ def save_cache(cache):
 
 
 def cache_fresh(entry):
+    if entry.get("v") != CACHE_VERSION:
+        return False
     try:
         fetched = datetime.fromisoformat(entry["fetched_at"])
     except Exception:
@@ -164,13 +168,16 @@ def cache_fresh(entry):
 def clean_readme_paragraph(readme, limit=320):
     text = re.sub(r"<!--.*?-->", "", readme, flags=re.S)
     text = re.sub(r"<[^>]+>", "", text)  # html tags
-    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)  # images / badges
+    # Linked badges first ([![alt](img)](url)), then bare images, then empty-link leftovers.
     text = re.sub(r"\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)", "", text)
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
+    text = re.sub(r"\[\s*\]\([^)]*\)", "", text)
     for para in re.split(r"\n\s*\n", text):
         p = " ".join(para.strip().split())
         if len(p) < 60 or p.startswith(("#", "|", "```", "---", "===", "* ", "- ")):
             continue
         p = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", p)  # links -> text
+        p = p.replace("**", "")
         return p if len(p) <= limit else p[: limit - 1].rstrip() + "…"
     return ""
 
@@ -249,11 +256,14 @@ def fetch_repo_context(gh, full_name, use_llm):
     analysis = analyze_contributing(contributing)
     llm = llm_summarize(full_name, meta.get("description") or "", readme, contributing) if use_llm else None
 
-    summary = (llm or {}).get("project_summary") or " ".join(
-        s for s in [meta.get("description") or "", clean_readme_paragraph(readme)] if s
-    )
+    description = meta.get("description") or ""
+    para = clean_readme_paragraph(readme)
+    if description and para and description.lower().rstrip(".") in para.lower():
+        description = ""  # the README paragraph already repeats the repo description
+    summary = (llm or {}).get("project_summary") or " ".join(s for s in [description, para] if s)
 
     return {
+        "v": CACHE_VERSION,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "full_name": full_name,
         "url": meta["html_url"],
@@ -291,7 +301,7 @@ def build_records(issues, repos):
                 "title": it["title"],
                 "url": it["html_url"],
                 "number": it["number"],
-                "labels": [l["name"] for l in it.get("labels", [])][:6],
+                "labels": [l["name"] for l in it.get("labels", [])],
                 "comments": it.get("comments", 0),
                 "updated_days": days_since(it["updated_at"]),
                 "created_days": days_since(it["created_at"]),
@@ -336,6 +346,16 @@ HTML_TEMPLATE = r"""<!doctype html>
   ol, ul { margin:6px 0 0 18px; padding:0; }
   .meta { font-size:12px; color:var(--muted); margin-top:8px; }
   .empty { color:var(--muted); padding:40px 0; text-align:center; }
+  .filters { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:16px; }
+  .filters .row { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; }
+  .filters details { margin-top:10px; }
+  .labelgrid { display:flex; flex-wrap:wrap; gap:6px 16px; margin-top:8px; }
+  label.opt { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:13px; }
+  label.opt.pin { font-size:14px; font-weight:600; }
+  input[type=checkbox] { flex:none; width:auto; padding:0; margin:0; accent-color:var(--accent); }
+  .n { color:var(--muted); font-weight:400; }
+  button.link { background:none; border:none; color:var(--accent); cursor:pointer; font:inherit; font-size:13px; padding:0; }
+  .chip.hl { background:var(--accent); color:var(--bg); }
 </style>
 </head>
 <body>
@@ -351,6 +371,20 @@ HTML_TEMPLATE = r"""<!doctype html>
       <option value="comments">Fewest comments</option>
     </select>
   </div>
+  <div class="filters">
+    <div class="row">
+      <span id="pinned" class="row"></span>
+      <select id="mode">
+        <option value="any">Match any selected label</option>
+        <option value="all">Match all selected labels</option>
+      </select>
+      <button class="link" id="clear" type="button">Clear labels</button>
+    </div>
+    <details id="more">
+      <summary>More labels (<span id="morecount"></span>)</summary>
+      <div class="labelgrid" id="labelgrid"></div>
+    </details>
+  </div>
   <div class="count" id="count"></div>
   <div id="list"></div>
 </main>
@@ -362,6 +396,48 @@ $("sub").textContent = "Generated " + META.generated + " · query: " + META.quer
 
 const langs = [...new Set(DATA.map(d => d.repo.language).filter(Boolean))].sort();
 langs.forEach(l => { const o = document.createElement("option"); o.value = l; o.textContent = l; $("lang").appendChild(o); });
+
+// ---- label filters ----
+// Labels are normalised so "help-wanted", "Help Wanted" and "help wanted" count as one.
+const ALIASES = { "docs": "documentation" };
+const PINNED = ["help wanted"];
+function norm(l) {
+  const k = l.toLowerCase().replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+  return ALIASES[k] || k;
+}
+DATA.forEach(d => { d.keys = [...new Set(d.labels.map(norm))]; });
+const counts = {};
+DATA.forEach(d => d.keys.forEach(k => { counts[k] = (counts[k] || 0) + 1; }));
+const selected = new Set();
+
+function labelOption(key, pinned) {
+  const lab = document.createElement("label");
+  lab.className = "opt" + (pinned ? " pin" : "");
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.value = key;
+  cb.addEventListener("change", () => { if (cb.checked) selected.add(key); else selected.delete(key); render(); });
+  lab.appendChild(cb);
+  lab.appendChild(document.createTextNode(key + " "));
+  const n = document.createElement("span");
+  n.className = "n";
+  n.textContent = "(" + (counts[key] || 0) + ")";
+  lab.appendChild(n);
+  return lab;
+}
+PINNED.forEach(k => $("pinned").appendChild(labelOption(k, true)));
+// Labels that every issue carries (the search already requires them) can't filter anything, so hide them.
+const others = Object.keys(counts)
+  .filter(k => !PINNED.includes(k) && counts[k] < DATA.length)
+  .sort((a, b) => counts[b] - counts[a] || a.localeCompare(b));
+others.forEach(k => $("labelgrid").appendChild(labelOption(k, false)));
+$("morecount").textContent = others.length;
+if (!others.length) $("more").style.display = "none";
+$("clear").addEventListener("click", () => {
+  document.querySelectorAll(".filters input[type=checkbox]").forEach(c => { c.checked = false; });
+  selected.clear();
+  render();
+});
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -381,7 +457,10 @@ function card(d) {
   c.appendChild(el("p", "summary", d.repo.summary || "No summary available."));
 
   const chips = el("div", "chips");
-  d.labels.forEach(l => chips.appendChild(el("span", "chip", l)));
+  d.labels.forEach(l => {
+    const k = norm(l);
+    chips.appendChild(el("span", "chip" + (PINNED.includes(k) || selected.has(k) ? " hl" : ""), l));
+  });
   d.repo.contributing_flags.forEach(f => chips.appendChild(el("span", "chip flag", f)));
   c.appendChild(chips);
 
@@ -407,6 +486,11 @@ function render() {
   const q = $("q").value.toLowerCase(), lang = $("lang").value, sort = $("sort").value;
   let rows = DATA.filter(d => {
     if (lang && d.repo.language !== lang) return false;
+    if (selected.size) {
+      const want = [...selected];
+      const ok = $("mode").value === "all" ? want.every(k => d.keys.includes(k)) : want.some(k => d.keys.includes(k));
+      if (!ok) return false;
+    }
     if (!q) return true;
     return (d.title + " " + d.repo.full_name + " " + d.repo.summary + " " + d.repo.topics.join(" ")).toLowerCase().includes(q);
   });
@@ -416,7 +500,7 @@ function render() {
   if (!rows.length) list.appendChild(el("div", "empty", "No issues match."));
   rows.forEach(d => list.appendChild(card(d)));
 }
-["q", "lang", "sort"].forEach(id => $(id).addEventListener("input", render));
+["q", "lang", "sort", "mode"].forEach(id => $(id).addEventListener("input", render));
 render();
 </script>
 </body>
