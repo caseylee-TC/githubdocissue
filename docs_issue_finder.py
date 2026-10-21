@@ -416,6 +416,10 @@ HTML_TEMPLATE = r"""<!doctype html>
   .issue .num { color:var(--muted); font-weight:400; }
   .issue .chips { margin:4px 0 0; align-items:center; }
   .issue .meta { margin-top:0; }
+  .head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
+  .head > :first-child { min-width:0; }
+  button.link.hide { color:var(--muted); font-size:12px; white-space:nowrap; }
+  button.link.hide:hover { color:var(--accent); text-decoration:underline; }
 </style>
 </head>
 <body>
@@ -475,7 +479,14 @@ const selected = new Set();
 // Total issues per repo in the current "good first issue" view, so a card can say "2 of 4 issues"
 // when the other filters hide some. Recomputed in render().
 let repoTotals = {};
-const ALL_REPOS = new Set(DATA.map(d => d.repo.full_name)).size;
+// Issues and repos hidden with the "Hide" buttons. Not saved: reloading the page brings them back.
+const hiddenIssues = new Set(), hiddenRepos = new Set();
+function hideButton(text, onHide) {
+  const b = el("button", "link hide", text);
+  b.type = "button";
+  b.addEventListener("click", () => { onHide(); render(); });
+  return b;
+}
 
 function labelOption(key, pinned) {
   const lab = document.createElement("label");
@@ -528,7 +539,10 @@ function link(href, text) { const a = el("a", "", text); a.href = href; a.target
 
 function issueItem(d) {
   const li = el("li", "issue");
-  const h = el("h3"); h.appendChild(link(d.url, d.title)); h.appendChild(el("span", "num", " #" + d.number)); li.appendChild(h);
+  const head = el("div", "head");
+  const h = el("h3"); h.appendChild(link(d.url, d.title)); h.appendChild(el("span", "num", " #" + d.number)); head.appendChild(h);
+  head.appendChild(hideButton("Hide", () => hiddenIssues.add(d.url)));
+  li.appendChild(head);
   const chips = el("div", "chips");
   // Highlight only the labels the current filters ask for: ticked label boxes, and the
   // beginner labels while the "good first issue" box is ticked.
@@ -545,7 +559,10 @@ function issueItem(d) {
 function repoCard(g) {
   const repo = g.repo, total = repoTotals[repo.full_name], n = g.issues.length;
   const c = el("div", "card");
-  const h = el("h2"); h.appendChild(link(repo.url, repo.full_name)); c.appendChild(h);
+  const head = el("div", "head");
+  const h = el("h2"); h.appendChild(link(repo.url, repo.full_name)); head.appendChild(h);
+  head.appendChild(hideButton("Hide repo", () => hiddenRepos.add(repo.full_name)));
+  c.appendChild(head);
   const issueCount = (n < total ? n + " of " + total : n) + (total === 1 ? " issue" : " issues");
   c.appendChild(el("div", "repo", (repo.language || "n/a") + " · ★ " + repo.stars.toLocaleString() + (repo.license ? " · " + repo.license : "") + " · " + issueCount + " · summary: " + repo.summary_source));
   c.appendChild(el("p", "summary", repo.summary || "No summary available."));
@@ -579,7 +596,8 @@ function repoCard(g) {
 function render() {
   const q = $("q").value.toLowerCase(), lang = $("lang").value, sort = $("sort").value;
   // The "good first issue" checkbox decides which issues are counted at all; the other filters narrow that.
-  const pool = splitBeginner && $("beginner").checked ? DATA.filter(d => d.beginner) : DATA;
+  const isHidden = d => hiddenIssues.has(d.url) || hiddenRepos.has(d.repo.full_name);
+  const pool = DATA.filter(d => !isHidden(d) && !(splitBeginner && $("beginner").checked && !d.beginner));
   repoTotals = {};
   pool.forEach(d => { repoTotals[d.repo.full_name] = (repoTotals[d.repo.full_name] || 0) + 1; });
   let rows = pool.filter(d => {
@@ -606,8 +624,18 @@ function render() {
   const score = g => sort === "stars" ? -g.repo.stars : sort === "comments" ? g.issues[0].comments : g.issues[0].updated_days;
   groups.sort((a, b) => score(a) - score(b) || b.issues.length - a.issues.length || a.repo.full_name.localeCompare(b.repo.full_name));
 
-  // Out of everything the search returned, whichever way the checkbox is set.
-  $("count").textContent = rows.length + " of " + DATA.length + " issues in " + groups.length + " of " + ALL_REPOS + " repos";
+  // Out of everything the search returned, minus anything hidden (hidden items are counted separately).
+  const kept = DATA.filter(d => !isHidden(d));
+  const keptRepos = new Set(kept.map(d => d.repo.full_name)).size;
+  $("count").textContent = rows.length + " of " + kept.length + " issues in " + groups.length + " of " + keptRepos + " repos";
+  const nHidden = DATA.length - kept.length;
+  if (nHidden) {
+    $("count").append(" · " + nHidden + " hidden" + (hiddenRepos.size ? " (" + hiddenRepos.size + (hiddenRepos.size === 1 ? " repo" : " repos") + ")" : "") + " · ");
+    const undo = el("button", "link", "Unhide all");
+    undo.type = "button";
+    undo.addEventListener("click", () => { hiddenIssues.clear(); hiddenRepos.clear(); render(); });
+    $("count").appendChild(undo);
+  }
   const list = $("list"); list.replaceChildren();
   if (!rows.length) list.appendChild(el("div", "empty", "No issues match."));
   groups.forEach(g => list.appendChild(repoCard(g)));
