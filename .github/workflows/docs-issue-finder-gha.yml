@@ -1,14 +1,14 @@
-name: Docs Issue Finder
+name: GitHub Docs Issue Finder
 
 # On demand: run it from the repo's Actions tab with the "Run workflow" button.
 on:
   workflow_dispatch:
     inputs:
       max_issues:
-        description: Maximum issues to collect
-        default: "30"
+        description: Maximum issues to collect (most recently updated first)
+        default: "50"
       days:
-        description: Only issues updated within the last N days
+        description: Only issues opened within the last N days
         default: "90"
 
 permissions:

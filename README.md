@@ -1,4 +1,4 @@
-# Docs Issue Finder
+# GitHub Docs Issue Finder
 
 Finds open-source **documentation issues that welcome first-time contributors**, collects each project's contributing guide, summarizes what the project is, and writes everything to a local `dashboard.html`.
 
@@ -10,7 +10,7 @@ pip install -r requirements.txt
 # A read-only GitHub token is enough (no scopes needed for public data)
 export GITHUB_TOKEN=ghp_your_token_here
 
-python docs_issue_finder.py --max-issues 30 --days 90
+python docs_issue_finder.py --max-issues 50 --days 90
 open dashboard.html        # macOS; use xdg-open on Linux, start on Windows
 ```
 
@@ -20,8 +20,8 @@ Without a token the script still works, but GitHub's unauthenticated limits are 
 
 | Flag | Default | What it does |
 |------|---------|--------------|
-| `--max-issues N` | 30 | Maximum issues to collect |
-| `--days N` | 90 | Only issues updated within the last N days |
+| `--max-issues N` | 50 | Maximum issues to collect, taking the most recently updated first |
+| `--days N` | 90 | Only issues opened within the last N days |
 | `--query "..."` | none | Extra GitHub search qualifiers, e.g. `"language:python"` or `"org:kubernetes"` |
 | `--no-help-wanted` | off | Don't require the `help wanted` label (it is required by default) |
 | `--llm` | off | Use Claude for the project summary and contribution steps (needs `ANTHROPIC_API_KEY`) |
@@ -34,15 +34,19 @@ The search query (shown at the top of the dashboard) requires an issue to be:
 
 - open, with **no assignee**, and **no linked pull request**
 - in a repo that is **not archived**
-- **updated within `--days`**
-- labeled with any of `good first issue`, `good-first-issue`, `first-timers-only`
-- **and** labeled with any of `documentation`, `docs`
+- **opened within `--days`** (results are sorted by most recently updated, so active issues come first)
+- labeled with any of `documentation`, `docs`
 - **and** labeled `help wanted` (on by default, so every result is from a project asking for contributors; turn off with `--no-help-wanted`)
+
+The search's "no linked pull request" only catches PRs formally linked to the issue. After the search, the script also checks each issue's timeline and drops any issue that an **open or merged PR** mentions. A PR closed without merging counts as abandoned, so its issue stays. Issues with comments are kept. The script goes through the search results, fetching more pages as needed, until it has `--max-issues` issues with no such PR. So a run returns the full `--max-issues` unless the search runs out of results.
+
+Beginner labels (`good first issue`, `good-first-issue`, `first-timers-only`) are not required. The search returns issues with and without them, and the dashboard's **good first issue** checkbox switches between the two.
 
 To tune it, edit `FIRST_ISSUE_LABELS` and `DOC_LABELS` near the top of `docs_issue_finder.py`. Inside one `label:` qualifier GitHub treats comma-separated values as OR; separate `label:` qualifiers are AND.
 
 ## Using the dashboard
 
+- The **good first issue** checkbox at the top is ticked by default. Ticked, it shows only issues with a beginner label (`good first issue`, `good-first-issue` or `first-timers-only`), and the issue counts, including each repo card's, cover only those issues. Untick it to see every issue the search returned. These labels don't appear under **More labels**, since the checkbox covers them. It's hidden when all of the issues have a beginner label, or none do.
 - `help wanted` is required by the search by default, so every result has it. If you run with `--no-help-wanted`, a **help wanted** checkbox appears at the top (with a count) so you can still filter on it.
 - **More labels** lists every other label in the results, with counts. Labels that every issue shares, such as the ones the search already requires, are hidden because they can't narrow anything.
 - Spellings are merged, so `help-wanted`, `Help Wanted` and `help wanted` count as one label.

@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Docs Issue Finder: find open-source documentation issues that welcome new contributors.
+"""GitHub Docs Issue Finder: find open-source documentation issues that welcome new contributors.
 
 Pipeline:
-  1. Search GitHub for open, unassigned issues labeled "good first issue", documentation and
-     "help wanted" (the last is required by default; see --no-help-wanted).
-  2. Filter out stale / claimed issues and archived repos.
+  1. Search GitHub for open, unassigned documentation issues labeled "help wanted" (required
+     by default; see --no-help-wanted). Beginner labels such as "good first issue" are not
+     required; the dashboard has a checkbox for them.
+  2. Filter out stale / claimed issues and archived repos, and drop issues that an open or
+     merged pull request references.
   3. For each repo, fetch the README and the contributing guide (cached).
   4. Summarize the project and the contribution steps (heuristic, or LLM with --llm).
   5. Write a self-contained dashboard.html.
 
 Usage:
   export GITHUB_TOKEN=ghp_...        # recommended (read-only public access is enough)
-  python docs_issue_finder.py --max-issues 30 --days 90
+  python docs_issue_finder.py --max-issues 50 --days 90
 """
 import argparse
 import json
@@ -112,12 +114,12 @@ class GitHub:
 # Step 1-2: discover and filter issues
 # ----------------------------------------------------------------------------
 def build_query(days, extra, require_help_wanted=True):
+    # Beginner labels aren't part of the search; the dashboard filters on them instead.
     since = (date.today() - timedelta(days=days)).isoformat()
-    first = ",".join(f'"{l}"' for l in FIRST_ISSUE_LABELS)
     docs = ",".join(f'"{l}"' for l in DOC_LABELS)
     q = (
         f"is:issue is:open no:assignee -linked:pr archived:false "
-        f"updated:>={since} label:{first} label:{docs}"
+        f"created:>={since} label:{docs}"
     )
     if require_help_wanted:
         q += " label:" + ",".join(f'"{l}"' for l in HELP_WANTED_LABELS)
@@ -126,25 +128,64 @@ def build_query(days, extra, require_help_wanted=True):
     return q
 
 
-def search_issues(gh, query, max_issues):
-    items, page = [], 1
-    while len(items) < max_issues:
+def search_issues(gh, query, per_page=100):
+    """Yield search results one at a time, fetching the next page only when it's needed.
+
+    The Search API returns at most 1,000 results for a query.
+    """
+    page, seen = 1, 0
+    while seen < 1000:
         data = gh.get(
             "/search/issues",
-            params={
-                "q": query,
-                "sort": "updated",
-                "order": "desc",
-                "per_page": min(100, max_issues),
-                "page": page,
-            },
+            params={"q": query, "sort": "updated", "order": "desc", "per_page": per_page, "page": page},
         )
         batch = data.get("items", [])
-        items.extend(batch)
-        if len(batch) < 100 or len(items) >= data.get("total_count", 0):
-            break
+        yield from batch
+        seen += len(batch)
+        if len(batch) < per_page or seen >= data.get("total_count", 0):
+            return
         page += 1
-    return items[:max_issues]
+
+
+def referencing_pr(gh, issue):
+    """Return the URL of an open or merged PR that references the issue, else None.
+
+    The search's -linked:pr only catches formally linked PRs (closing keywords or
+    the Development sidebar). The timeline also shows PRs that just mention the
+    issue. A PR closed without merging is treated as abandoned and doesn't count.
+    """
+    url = issue["url"] + "/timeline"
+    page = 1
+    while True:
+        events = gh.get(url, params={"per_page": 100, "page": page}, ok404=True) or []
+        for ev in events:
+            if ev.get("event") != "cross-referenced":
+                continue
+            src = (ev.get("source") or {}).get("issue") or {}
+            pr = src.get("pull_request")
+            if pr and (src.get("state") == "open" or pr.get("merged_at")):
+                return src.get("html_url")
+        if len(events) < 100:
+            return None
+        page += 1
+
+
+def collect_issues(gh, query, max_issues):
+    """Go through the search results until max_issues issues have no open or merged PR.
+
+    Returns (issues, skipped), where skipped is how many results had a PR.
+    """
+    issues, skipped = [], 0
+    for it in search_issues(gh, query, per_page=min(100, max_issues * 2)):
+        pr = referencing_pr(gh, it)
+        if pr:
+            skipped += 1
+            print(f"  skipping {it['html_url']}: referenced by {pr}")
+            continue
+        issues.append(it)
+        if len(issues) >= max_issues:
+            break
+    return issues, skipped
 
 
 # ----------------------------------------------------------------------------
@@ -309,6 +350,9 @@ def build_records(issues, repos):
                 "url": it["html_url"],
                 "number": it["number"],
                 "labels": [l["name"] for l in it.get("labels", [])],
+                "beginner": any(
+                    l["name"].lower() in {f.lower() for f in FIRST_ISSUE_LABELS} for l in it.get("labels", [])
+                ),
                 "comments": it.get("comments", 0),
                 "updated_days": days_since(it["updated_at"]),
                 "created_days": days_since(it["created_at"]),
@@ -323,7 +367,7 @@ HTML_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Docs Issue Finder</title>
+<title>GitHub Docs Issue Finder</title>
 <style>
   :root { --bg:#fafaf9; --card:#fff; --text:#1c1917; --muted:#6b6560; --line:#e7e5e4; --accent:#0f766e; --chip:#f0efed; --warn:#b45309; }
   @media (prefers-color-scheme: dark) {
@@ -363,11 +407,20 @@ HTML_TEMPLATE = r"""<!doctype html>
   .n { color:var(--muted); font-weight:400; }
   button.link { background:none; border:none; color:var(--accent); cursor:pointer; font:inherit; font-size:13px; padding:0; }
   .chip.hl { background:var(--accent); color:var(--bg); }
+  .issues { list-style:none; margin:12px 0 0; padding:0; border-top:1px solid var(--line); }
+  .issue { padding:10px 0; border-bottom:1px solid var(--line); }
+  .issue:last-child { border-bottom:none; padding-bottom:0; }
+  .issue h3 { font-size:14px; font-weight:600; margin:0; overflow-wrap:anywhere; }
+  .issue h3 a { color:var(--text); text-decoration:none; }
+  .issue h3 a:hover { color:var(--accent); text-decoration:underline; }
+  .issue .num { color:var(--muted); font-weight:400; }
+  .issue .chips { margin:4px 0 0; align-items:center; }
+  .issue .meta { margin-top:0; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Docs Issue Finder</h1>
+  <h1>GitHub Docs Issue Finder</h1>
   <p class="sub" id="sub"></p>
   <div class="controls">
     <input id="q" type="search" placeholder="Filter by keyword (project, issue, topic)...">
@@ -380,6 +433,7 @@ HTML_TEMPLATE = r"""<!doctype html>
   </div>
   <div class="filters">
     <div class="row">
+      <label class="opt pin" id="beginnerwrap"><input type="checkbox" id="beginner" checked> good first issue <span class="n" id="beginnercount"></span></label>
       <span id="pinned" class="row"></span>
       <select id="mode">
         <option value="any">Match any selected label</option>
@@ -413,9 +467,15 @@ function norm(l) {
   return ALIASES[k] || k;
 }
 DATA.forEach(d => { d.keys = [...new Set(d.labels.map(norm))]; });
+// Beginner labels ("good first issue" and its spellings) are handled by the top checkbox, not "More labels".
+const BEGINNER = new Set((META.beginner_labels || []).map(norm));
 const counts = {};
 DATA.forEach(d => d.keys.forEach(k => { counts[k] = (counts[k] || 0) + 1; }));
 const selected = new Set();
+// Total issues per repo in the current "good first issue" view, so a card can say "2 of 4 issues"
+// when the other filters hide some. Recomputed in render().
+let repoTotals = {};
+const ALL_REPOS = new Set(DATA.map(d => d.repo.full_name)).size;
 
 function labelOption(key, pinned) {
   const lab = document.createElement("label");
@@ -439,13 +499,21 @@ PINNED.forEach(k => {
 });
 // Labels that every issue carries (the search already requires them) can't filter anything, so hide them.
 const others = Object.keys(counts)
-  .filter(k => !PINNED.includes(k) && counts[k] < DATA.length)
+  .filter(k => !PINNED.includes(k) && !BEGINNER.has(k) && counts[k] < DATA.length)
   .sort((a, b) => counts[b] - counts[a] || a.localeCompare(b));
 others.forEach(k => $("labelgrid").appendChild(labelOption(k, false)));
 $("morecount").textContent = others.length;
 if (!others.length) $("more").style.display = "none";
+// The "good first issue" checkbox: ticked shows only issues with a beginner label, unticked shows
+// every issue. It's hidden when it couldn't change anything (all or none have the label).
+const nBeginner = DATA.filter(d => d.beginner).length;
+const splitBeginner = nBeginner > 0 && nBeginner < DATA.length;
+const alsoLabels = (META.beginner_labels || []).filter(l => l.toLowerCase() !== "good first issue");
+$("beginnercount").textContent = "(" + nBeginner + ")" + (alsoLabels.length ? " · includes " + alsoLabels.join(", ") : "");
+if (!splitBeginner) $("beginnerwrap").style.display = "none";
+$("beginner").addEventListener("change", render);
 $("clear").addEventListener("click", () => {
-  document.querySelectorAll(".filters input[type=checkbox]").forEach(c => { c.checked = false; });
+  document.querySelectorAll("#pinned input, #labelgrid input").forEach(c => { c.checked = false; });
   selected.clear();
   render();
 });
@@ -458,44 +526,63 @@ function el(tag, cls, text) {
 }
 function link(href, text) { const a = el("a", "", text); a.href = href; a.target = "_blank"; a.rel = "noopener"; return a; }
 
-function card(d) {
-  const c = el("div", "card");
-  const h = el("h2"); h.appendChild(link(d.url, d.title)); c.appendChild(h);
-  const r = el("div", "repo");
-  r.appendChild(link(d.repo.url, d.repo.full_name));
-  r.appendChild(document.createTextNode(" · " + (d.repo.language || "n/a") + " · ★ " + d.repo.stars.toLocaleString() + (d.repo.license ? " · " + d.repo.license : "")));
-  c.appendChild(r);
-  c.appendChild(el("p", "summary", d.repo.summary || "No summary available."));
-
+function issueItem(d) {
+  const li = el("li", "issue");
+  const h = el("h3"); h.appendChild(link(d.url, d.title)); h.appendChild(el("span", "num", " #" + d.number)); li.appendChild(h);
   const chips = el("div", "chips");
+  // Highlight only the labels the current filters ask for: ticked label boxes, and the
+  // beginner labels while the "good first issue" box is ticked.
+  const beginnerOn = splitBeginner && $("beginner").checked;
   d.labels.forEach(l => {
     const k = norm(l);
-    chips.appendChild(el("span", "chip" + (PINNED.includes(k) || selected.has(k) ? " hl" : ""), l));
+    chips.appendChild(el("span", "chip" + (selected.has(k) || (beginnerOn && BEGINNER.has(k)) ? " hl" : ""), l));
   });
-  d.repo.contributing_flags.forEach(f => chips.appendChild(el("span", "chip flag", f)));
-  c.appendChild(chips);
+  chips.appendChild(el("span", "meta", "updated " + d.updated_days + "d ago · opened " + d.created_days + "d ago · " + d.comments + (d.comments === 1 ? " comment" : " comments")));
+  li.appendChild(chips);
+  return li;
+}
+
+function repoCard(g) {
+  const repo = g.repo, total = repoTotals[repo.full_name], n = g.issues.length;
+  const c = el("div", "card");
+  const h = el("h2"); h.appendChild(link(repo.url, repo.full_name)); c.appendChild(h);
+  const issueCount = (n < total ? n + " of " + total : n) + (total === 1 ? " issue" : " issues");
+  c.appendChild(el("div", "repo", (repo.language || "n/a") + " · ★ " + repo.stars.toLocaleString() + (repo.license ? " · " + repo.license : "") + " · " + issueCount + " · summary: " + repo.summary_source));
+  c.appendChild(el("p", "summary", repo.summary || "No summary available."));
+
+  if (repo.contributing_flags.length) {
+    const flags = el("div", "chips");
+    repo.contributing_flags.forEach(f => flags.appendChild(el("span", "chip flag", f)));
+    c.appendChild(flags);
+  }
 
   const det = el("details");
   det.appendChild(el("summary", "", "How to contribute"));
-  if (d.repo.contribution_steps.length) {
-    const ol = el("ol"); d.repo.contribution_steps.forEach(s => ol.appendChild(el("li", "", s))); det.appendChild(ol);
-  } else if (d.repo.contributing_headings.length) {
+  if (repo.contribution_steps.length) {
+    const ol = el("ol"); repo.contribution_steps.forEach(s => ol.appendChild(el("li", "", s))); det.appendChild(ol);
+  } else if (repo.contributing_headings.length) {
     det.appendChild(el("div", "", "Guide sections:"));
-    const ul = el("ul"); d.repo.contributing_headings.forEach(s => ul.appendChild(el("li", "", s))); det.appendChild(ul);
+    const ul = el("ul"); repo.contributing_headings.forEach(s => ul.appendChild(el("li", "", s))); det.appendChild(ul);
   }
   const p = el("div", "meta");
-  if (d.repo.contributing_url) p.appendChild(link(d.repo.contributing_url, "Read the contributing guide"));
+  if (repo.contributing_url) p.appendChild(link(repo.contributing_url, "Read the contributing guide"));
   else p.textContent = "No contributing guide found. Check the README or ask in the issue.";
   det.appendChild(p);
   c.appendChild(det);
 
-  c.appendChild(el("div", "meta", "#" + d.number + " · updated " + d.updated_days + "d ago · opened " + d.created_days + "d ago · " + d.comments + " comments · summary: " + d.repo.summary_source));
+  const ul = el("ul", "issues");
+  g.issues.forEach(d => ul.appendChild(issueItem(d)));
+  c.appendChild(ul);
   return c;
 }
 
 function render() {
   const q = $("q").value.toLowerCase(), lang = $("lang").value, sort = $("sort").value;
-  let rows = DATA.filter(d => {
+  // The "good first issue" checkbox decides which issues are counted at all; the other filters narrow that.
+  const pool = splitBeginner && $("beginner").checked ? DATA.filter(d => d.beginner) : DATA;
+  repoTotals = {};
+  pool.forEach(d => { repoTotals[d.repo.full_name] = (repoTotals[d.repo.full_name] || 0) + 1; });
+  let rows = pool.filter(d => {
     if (lang && d.repo.language !== lang) return false;
     if (selected.size) {
       const want = [...selected];
@@ -505,11 +592,25 @@ function render() {
     if (!q) return true;
     return (d.title + " " + d.repo.full_name + " " + d.repo.summary + " " + d.repo.topics.join(" ")).toLowerCase().includes(q);
   });
-  rows.sort((a, b) => sort === "stars" ? b.repo.stars - a.repo.stars : sort === "comments" ? a.comments - b.comments : a.updated_days - b.updated_days);
-  $("count").textContent = rows.length + " of " + DATA.length + " issues";
+  // Issues inside a repo share its stars, so "Most stars" falls back to recently updated there.
+  rows.sort((a, b) => sort === "comments" ? a.comments - b.comments : a.updated_days - b.updated_days);
+
+  // Group the matching issues by repo; rows are already sorted, so each group's first issue is its best.
+  const byRepo = new Map();
+  rows.forEach(d => {
+    const name = d.repo.full_name;
+    if (!byRepo.has(name)) byRepo.set(name, { repo: d.repo, issues: [] });
+    byRepo.get(name).issues.push(d);
+  });
+  const groups = [...byRepo.values()];
+  const score = g => sort === "stars" ? -g.repo.stars : sort === "comments" ? g.issues[0].comments : g.issues[0].updated_days;
+  groups.sort((a, b) => score(a) - score(b) || b.issues.length - a.issues.length || a.repo.full_name.localeCompare(b.repo.full_name));
+
+  // Out of everything the search returned, whichever way the checkbox is set.
+  $("count").textContent = rows.length + " of " + DATA.length + " issues in " + groups.length + " of " + ALL_REPOS + " repos";
   const list = $("list"); list.replaceChildren();
   if (!rows.length) list.appendChild(el("div", "empty", "No issues match."));
-  rows.forEach(d => list.appendChild(card(d)));
+  groups.forEach(g => list.appendChild(repoCard(g)));
 }
 ["q", "lang", "sort", "mode"].forEach(id => $(id).addEventListener("input", render));
 render();
@@ -520,7 +621,11 @@ render();
 
 
 def write_dashboard(records, query, out_path):
-    meta = {"generated": datetime.now().strftime("%Y-%m-%d %H:%M"), "query": query}
+    meta = {
+        "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "query": query,
+        "beginner_labels": FIRST_ISSUE_LABELS,
+    }
     safe = lambda obj: json.dumps(obj).replace("</", "<\\/")
     html_text = HTML_TEMPLATE.replace("__DATA__", safe(records)).replace("__META__", safe(meta))
     Path(out_path).write_text(html_text, encoding="utf-8")
@@ -531,8 +636,10 @@ def write_dashboard(records, query, out_path):
 # ----------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--max-issues", type=int, default=30, help="max issues to collect (default 30)")
-    ap.add_argument("--days", type=int, default=90, help="only issues updated within N days (default 90)")
+    ap.add_argument(
+        "--max-issues", type=int, default=50, help="max issues to collect, newest activity first (default 50)"
+    )
+    ap.add_argument("--days", type=int, default=90, help="only issues opened within the last N days (default 90)")
     ap.add_argument("--query", default="", help='extra GitHub search qualifiers, e.g. "language:python"')
     ap.add_argument(
         "--no-help-wanted",
@@ -553,8 +660,8 @@ def main():
     gh = GitHub(token)
     query = build_query(args.days, args.query, require_help_wanted=not args.no_help_wanted)
     print(f"Searching: {query}")
-    issues = search_issues(gh, query, args.max_issues)
-    print(f"Found {len(issues)} issues.")
+    issues, skipped = collect_issues(gh, query, args.max_issues)
+    print(f"Collected {len(issues)} matching issues (skipped {skipped} that already have a pull request).")
 
     cache = {} if args.no_cache else load_cache()
     repos = {}
