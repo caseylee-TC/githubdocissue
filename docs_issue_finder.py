@@ -583,10 +583,17 @@ langs.forEach(l => { const o = document.createElement("option"); o.value = l; o.
 
 // ---- label filters ----
 // Labels are normalised so "help-wanted", "Help Wanted" and "help wanted" count as one.
-const ALIASES = { "docs": "documentation" };
+// Aliases then merge different names for the same thing into one "More labels" option.
+const EASY = "beginner / easy";
+const ALIASES = {
+  "docs": "documentation",
+  "easy": EASY, "difficulty: easy": EASY, "level: easy": EASY,
+  "beginner": EASY, "beginners": EASY, "beginner friendly": EASY, "level: beginner": EASY,
+  "low hanging fruit": EASY,
+};
 const PINNED = ["help wanted"];
 function norm(l) {
-  const k = l.toLowerCase().replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+  const k = l.toLowerCase().replace(/[-_]+/g, " ").replace(/\s*:\s*/g, ": ").replace(/\s+/g, " ").trim();
   return ALIASES[k] || k;
 }
 DATA.forEach(d => { d.keys = [...new Set(d.labels.map(norm))]; });
