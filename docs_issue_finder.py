@@ -539,6 +539,8 @@ HTML_TEMPLATE = r"""<!doctype html>
       <option value="updated">Recently updated</option>
       <option value="stars">Most stars</option>
       <option value="comments">Fewest comments</option>
+      <option value="newest">Newest issues</option>
+      <option value="oldest">Oldest issues</option>
     </select>
   </div>
   <div class="filters">
@@ -728,7 +730,10 @@ function render() {
     return (d.title + " " + d.repo.full_name + " " + d.repo.summary + " " + d.repo.topics.join(" ")).toLowerCase().includes(q);
   });
   // Issues inside a repo share its stars, so "Most stars" falls back to recently updated there.
-  rows.sort((a, b) => sort === "comments" ? a.comments - b.comments : a.updated_days - b.updated_days);
+  // Lower sorts first. "Newest"/"Oldest" go by when the issue was opened, not last updated.
+  const issueScore = d => sort === "comments" ? d.comments : sort === "newest" ? d.created_days
+    : sort === "oldest" ? -d.created_days : d.updated_days;
+  rows.sort((a, b) => issueScore(a) - issueScore(b));
 
   // Group the matching issues by repo; rows are already sorted, so each group's first issue is its best.
   const byRepo = new Map();
@@ -738,7 +743,7 @@ function render() {
     byRepo.get(name).issues.push(d);
   });
   const groups = [...byRepo.values()];
-  const score = g => sort === "stars" ? -g.repo.stars : sort === "comments" ? g.issues[0].comments : g.issues[0].updated_days;
+  const score = g => sort === "stars" ? -g.repo.stars : issueScore(g.issues[0]);
   groups.sort((a, b) => score(a) - score(b) || b.issues.length - a.issues.length || a.repo.full_name.localeCompare(b.repo.full_name));
 
   // Out of everything the search returned, minus anything hidden (hidden items are counted separately).
