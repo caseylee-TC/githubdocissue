@@ -505,8 +505,10 @@ HTML_TEMPLATE = r"""<!doctype html>
   .filters .row { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; }
   .filters details { margin-top:10px; }
   .labelgrid { display:flex; flex-wrap:wrap; gap:6px 16px; margin-top:8px; }
+  #labelsearch { display:block; width:100%; max-width:320px; margin-top:8px; }
   label.opt { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:13px; }
   label.opt.pin { font-size:14px; font-weight:600; }
+  label.opt[hidden] { display:none; }
   input[type=checkbox] { flex:none; width:auto; padding:0; margin:0; accent-color:var(--accent); }
   .n { color:var(--muted); font-weight:400; }
   button.link { background:none; border:none; color:var(--accent); cursor:pointer; font:inherit; font-size:13px; padding:0; }
@@ -555,7 +557,9 @@ HTML_TEMPLATE = r"""<!doctype html>
     </div>
     <details id="more">
       <summary>More labels (<span id="morecount"></span>)</summary>
+      <input id="labelsearch" type="search" placeholder="Search labels...">
       <div class="labelgrid" id="labelgrid"></div>
+      <div class="meta" id="labelnone" hidden>No labels match.</div>
     </details>
   </div>
   <div class="count" id="count"></div>
@@ -639,6 +643,21 @@ const others = Object.keys(counts)
   .filter(k => !PINNED.includes(k) && !BEGINNER.has(k) && counts[k] < DATA.length)
   .sort((a, b) => counts[b] - counts[a] || a.localeCompare(b));
 others.forEach(k => $("labelgrid").appendChild(labelOption(k, false)));
+// Label search: matches the option name or any original spelling merged into it, so "difficulty"
+// finds "beginner / easy". Ticked labels stay visible so they can always be unticked.
+const spellings = {};
+DATA.forEach(d => d.labels.forEach(l => { const k = norm(l); (spellings[k] = spellings[k] || new Set()).add(l.toLowerCase()); }));
+$("labelsearch").addEventListener("input", () => {
+  const s = $("labelsearch").value.toLowerCase().trim();
+  let shown = 0;
+  $("labelgrid").querySelectorAll("label.opt").forEach(lab => {
+    const k = lab.querySelector("input").value;
+    const hit = !s || selected.has(k) || k.includes(s) || [...(spellings[k] || [])].some(l => l.includes(s));
+    lab.hidden = !hit;
+    if (hit) shown++;
+  });
+  $("labelnone").hidden = shown > 0;
+});
 $("morecount").textContent = others.length;
 if (!others.length) $("more").style.display = "none";
 // The "good first issue" checkbox: ticked shows only issues with a beginner label, unticked shows
