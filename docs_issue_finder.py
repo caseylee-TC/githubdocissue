@@ -94,17 +94,26 @@ class GitHub:
     def get(self, path, params=None, raw=False, ok404=False):
         url = path if path.startswith("http") else API + path
         headers = {"Accept": "application/vnd.github.raw+json"} if raw else {}
-        for _ in range(4):
+        for attempt in range(4):
             r = self.s.get(url, params=params, headers=headers, timeout=30)
             if r.status_code == 404 and ok404:
                 return None
             limited = r.status_code == 429 or (
                 r.status_code == 403 and r.headers.get("x-ratelimit-remaining") == "0"
             )
-            secondary = r.status_code == 403 and "retry-after" in r.headers
+            # Secondary limits don't always send retry-after; the body says so instead.
+            secondary = r.status_code == 403 and (
+                "retry-after" in r.headers or "secondary rate limit" in r.text.lower()
+            )
             if limited or secondary:
                 if "retry-after" in r.headers:
                     wait = int(r.headers["retry-after"]) + 1
+                elif secondary:
+                    # GitHub's guidance: wait at least a minute, then back off.
+                    wait = 60 * (attempt + 1)
+                    print(f"  secondary rate limit, waiting {wait}s...", file=sys.stderr)
+                    time.sleep(wait)
+                    continue
                 else:
                     reset = int(r.headers.get("x-ratelimit-reset", time.time() + 60))
                     wait = max(reset - time.time(), 1) + 1
@@ -117,6 +126,8 @@ class GitHub:
                 continue
             if r.status_code == 403 and ok404:
                 return None  # e.g. blocked/DMCA repo content
+            if not r.ok:
+                print(f"  GitHub said: {r.text[:300]}", file=sys.stderr)
             r.raise_for_status()
             return r.text if raw else r.json()
         raise RuntimeError(f"Gave up on {url}")
